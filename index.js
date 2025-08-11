@@ -13,13 +13,24 @@ function broadcastOnlineDevices() {
     lastSeen: Date.now(),
     isOnline: true,
   }));
-  const message = JSON.stringify({ type: 'online-devices', devices });
-  for (const ws of clients.keys()) {
-    ws.send(message);
+  
+  // Only broadcast if we have devices
+  if (devices.length > 0) {
+    console.log('Broadcasting online devices:', devices);
+    const message = JSON.stringify({ type: 'online-devices', devices });
+    for (const ws of clients.keys()) {
+      if (ws.readyState === 1) { // Only send to open connections
+        ws.send(message);
+      }
+    }
+  } else {
+    console.log('No devices to broadcast');
   }
 }
 
 wss.on('connection', (ws) => {
+  console.log('New WebSocket connection established');
+  
   // Helper to register or update client info
   function registerOrUpdateClient(id, name) {
     if (!id) {
@@ -28,8 +39,13 @@ wss.on('connection', (ws) => {
     if (!name) {
       name = `User-${id.slice(0, 4)}`;
     }
+    console.log('Registering/updating client:', { id, name });
     clients.set(ws, { id, name });
-    broadcastOnlineDevices();
+    
+    // Wait a bit before broadcasting to ensure all clients are registered
+    setTimeout(() => {
+      broadcastOnlineDevices();
+    }, 200); // Increased delay for better stability
   }
 
   ws.on('message', (data) => {
@@ -38,9 +54,12 @@ wss.on('connection', (ws) => {
     try {
       msg = JSON.parse(data);
     } catch (e) {
+      console.error('Failed to parse message:', e);
       return;
     }
+    
     if ((msg.type === 'init' || msg.type === 'update-name') && msg.id && msg.name) {
+      console.log('Processing init/update-name:', msg);
       registerOrUpdateClient(msg.id, msg.name);
     } else if (msg.type === 'message') {
       const client = clients.get(ws);
@@ -56,27 +75,68 @@ wss.on('connection', (ws) => {
         };
         const chatMsgStr = JSON.stringify(chatMsg);
         if (msg.receiverId) {
-          // One-to-one: send only to receiver and sender
+          // One-to-one: send only to receiver and sender (each once)
+          const sentTo = new Set(); // Track who we've sent to
           for (const [wsClient, info] of clients.entries()) {
-            if (info.id === msg.receiverId || info.id === client.id) {
-              wsClient.send(chatMsgStr);
-              console.log('Sent to client:', chatMsgStr);
+            if ((info.id === msg.receiverId || info.id === client.id) && !sentTo.has(info.id)) {
+              if (wsClient.readyState === 1) { // Only send to open connections
+                wsClient.send(chatMsgStr);
+                console.log('Sent to client:', info.name, chatMsgStr);
+                sentTo.add(info.id);
+              }
             }
           }
         } else {
-          // Broadcast: send to all
-          for (const wsClient of clients.keys()) {
-            wsClient.send(chatMsgStr);
-            console.log('Sent to client:', chatMsgStr);
+          // Broadcast: send to all (each once)
+          const sentTo = new Set(); // Track who we've sent to
+          for (const [wsClient, info] of clients.entries()) {
+            if (!sentTo.has(info.id)) {
+              if (wsClient.readyState === 1) { // Only send to open connections
+                wsClient.send(chatMsgStr);
+                console.log('Sent to client:', info.name, chatMsgStr);
+                sentTo.add(info.id);
+              }
+            }
           }
         }
       }
+    } else if (msg.type === 'read-receipt') {
+      // Handle read receipts
+      const client = clients.get(ws);
+      if (client && msg.messageId && msg.receiverId) {
+        const readReceipt = {
+          type: 'read-receipt',
+          messageId: msg.messageId,
+          senderId: client.id, // Who read the message
+          receiverId: client.id, // Who read the message (for the frontend to match)
+          originalSenderId: msg.receiverId, // Who originally sent the message
+          timestamp: Date.now(),
+        };
+        const readReceiptStr = JSON.stringify(readReceipt);
+        
+        // Send read receipt to the original sender
+        for (const [wsClient, info] of clients.entries()) {
+          if (info.id === msg.receiverId && wsClient.readyState === 1) {
+            wsClient.send(readReceiptStr);
+            console.log('Sent read receipt to:', info.name, readReceiptStr);
+          }
+        }
+      }
+    } else {
+      console.log('Unknown message type:', msg.type);
     }
   });
 
   ws.on('close', () => {
+    const client = clients.get(ws);
+    if (client) {
+      console.log('Client disconnected:', client.name);
+    }
     clients.delete(ws);
-    broadcastOnlineDevices();
+    // Wait a bit before broadcasting to ensure cleanup is complete
+    setTimeout(() => {
+      broadcastOnlineDevices();
+    }, 200); // Increased delay for better stability
   });
 });
 
