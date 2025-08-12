@@ -1,7 +1,17 @@
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
+const http = require('http');
 
-const wss = new WebSocket.Server({ port: 3001 });
+const PORT = process.env.PORT || 3001;
+
+// Create HTTP server
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('WebSocket server is running');
+});
+
+// Create WebSocket server attached to HTTP server
+const wss = new WebSocket.Server({ server });
 
 // Store connected clients and their info
 const clients = new Map();
@@ -14,22 +24,27 @@ function broadcastOnlineDevices() {
     isOnline: true,
   }));
   
+  console.log('Broadcasting online devices to', clients.size, 'clients:', devices);
+  
   // Only broadcast if we have devices
   if (devices.length > 0) {
-    console.log('Broadcasting online devices:', devices);
     const message = JSON.stringify({ type: 'online-devices', devices });
+    let sentCount = 0;
     for (const ws of clients.keys()) {
       if (ws.readyState === 1) { // Only send to open connections
         ws.send(message);
+        sentCount++;
       }
     }
+    console.log(`Sent online devices update to ${sentCount} clients`);
   } else {
     console.log('No devices to broadcast');
   }
 }
 
-wss.on('connection', (ws) => {
-  console.log('New WebSocket connection established');
+wss.on('connection', (ws, req) => {
+  console.log('New WebSocket connection established from:', req.socket.remoteAddress);
+  console.log('Total connected clients:', clients.size);
   
   // Helper to register or update client info
   function registerOrUpdateClient(id, name) {
@@ -140,4 +155,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-console.log('WebSocket server running on ws://localhost:3001');
+server.listen(PORT, () => {
+  console.log(`WebSocket server running on port ${PORT}`);
+});
