@@ -15,6 +15,7 @@ const wss = new WebSocket.Server({ server });
 
 // Store connected clients and their info
 const clients = new Map();
+const HEARTBEAT_INTERVAL_MS = 5000;
 
 function broadcastOnlineDevices() {
   const devices = Array.from(clients.values()).map(client => ({
@@ -45,6 +46,11 @@ function broadcastOnlineDevices() {
 wss.on('connection', (ws, req) => {
   console.log('New WebSocket connection established from:', req.socket.remoteAddress);
   console.log('Total connected clients:', clients.size);
+  // Mark connection alive and setup heartbeat
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
   
   // Helper to register or update client info
   function registerOrUpdateClient(id, name) {
@@ -148,11 +154,38 @@ wss.on('connection', (ws, req) => {
       console.log('Client disconnected:', client.name);
     }
     clients.delete(ws);
-    // Wait a bit before broadcasting to ensure cleanup is complete
-    setTimeout(() => {
-      broadcastOnlineDevices();
-    }, 200); // Increased delay for better stability
+    // Broadcast immediately so others see the update right away
+    broadcastOnlineDevices();
   });
+});
+
+// Heartbeat to detect dead connections quickly
+const heartbeatInterval = setInterval(() => {
+  for (const ws of clients.keys()) {
+    if (ws.isAlive === false) {
+      const client = clients.get(ws);
+      console.log('Terminating unresponsive client:', client?.name || 'unknown');
+      clients.delete(ws);
+      try {
+        ws.terminate();
+      } catch (e) {
+        // ignore
+      }
+      continue;
+    }
+    ws.isAlive = false;
+    try {
+      ws.ping();
+    } catch (e) {
+      // ignore
+    }
+  }
+  // After cleaning up, broadcast current state
+  broadcastOnlineDevices();
+}, HEARTBEAT_INTERVAL_MS);
+
+wss.on('close', () => {
+  clearInterval(heartbeatInterval);
 });
 
 server.listen(PORT, () => {
