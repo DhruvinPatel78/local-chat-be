@@ -1,11 +1,100 @@
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const http = require('http');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const PORT = process.env.PORT || 3001;
 
+// Create uploads directory if it doesn't exist
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1E9)}-${file.originalname}`;
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  }
+});
+
 // Create HTTP server
 const server = http.createServer((req, res) => {
+  // Add CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    res.writeHead(200);
+    res.end();
+    return;
+  }
+  
+  // Handle file uploads
+  if (req.method === 'POST' && req.url === '/upload') {
+    upload.single('file')(req, res, (err) => {
+      if (err) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: err.message }));
+        return;
+      }
+      
+      if (!req.file) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'No file uploaded' }));
+        return;
+      }
+
+      const fileInfo = {
+        id: uuidv4(),
+        filename: req.file.filename,
+        originalName: req.file.originalname,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+        path: req.file.path
+      };
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(fileInfo));
+    });
+    return;
+  }
+
+  // Handle file downloads
+  if (req.method === 'GET' && req.url.startsWith('/files/')) {
+    const filename = req.url.replace('/files/', '');
+    const filepath = path.join(uploadsDir, filename);
+    
+    if (fs.existsSync(filepath)) {
+      const stat = fs.statSync(filepath);
+      res.writeHead(200, {
+        'Content-Type': 'application/octet-stream',
+        'Content-Length': stat.size,
+        'Content-Disposition': `attachment; filename="${filename}"`
+      });
+      fs.createReadStream(filepath).pipe(res);
+    } else {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      res.end('File not found');
+    }
+    return;
+  }
+
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('WebSocket server is running');
 });
@@ -90,9 +179,13 @@ wss.on('connection', (ws, req) => {
           id: uuidv4(),
           senderId: client.id,
           senderName: client.name,
-          content: msg.content,
+          content: msg.content || '',
           timestamp: Date.now(),
           receiverId: msg.receiverId || null,
+          messageType: msg.messageType || 'text',
+          fileName: msg.fileName,
+          fileSize: msg.fileSize,
+          fileId: msg.fileId,
         };
         const chatMsgStr = JSON.stringify(chatMsg);
         if (msg.receiverId) {
