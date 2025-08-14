@@ -57,3 +57,4 @@ This will trigger an automatic redeploy on Render.com.
 - ✅ Frontend is configured correctly
 - ❌ Backend needs redeployment
 - ⏳ Waiting for Render.com to deploy changes
+
