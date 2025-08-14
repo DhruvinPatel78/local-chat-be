@@ -104,7 +104,7 @@ const wss = new WebSocket.Server({ server });
 
 // Store connected clients and their info
 const clients = new Map();
-const HEARTBEAT_INTERVAL_MS = 5000;
+const HEARTBEAT_INTERVAL_MS = 3000; // Reduced to 3 seconds for faster detection
 
 function broadcastOnlineDevices() {
   const devices = Array.from(clients.values()).map(client => ({
@@ -116,25 +116,22 @@ function broadcastOnlineDevices() {
   
   console.log('Broadcasting online devices to', clients.size, 'clients:', devices);
   
-  // Only broadcast if we have devices
-  if (devices.length > 0) {
-    const message = JSON.stringify({ type: 'online-devices', devices });
-    let sentCount = 0;
-    for (const ws of clients.keys()) {
-      if (ws.readyState === 1) { // Only send to open connections
-        ws.send(message);
-        sentCount++;
-      }
+  // Always broadcast current state (even if empty) so clients know the current status
+  const message = JSON.stringify({ type: 'online-devices', devices });
+  let sentCount = 0;
+  for (const ws of clients.keys()) {
+    if (ws.readyState === 1) { // Only send to open connections
+      ws.send(message);
+      sentCount++;
     }
-    console.log(`Sent online devices update to ${sentCount} clients`);
-  } else {
-    console.log('No devices to broadcast');
   }
+  console.log(`Sent online devices update to ${sentCount} clients (${devices.length} devices)`);
 }
 
 wss.on('connection', (ws, req) => {
   console.log('New WebSocket connection established from:', req.socket.remoteAddress);
-  console.log('Total connected clients:', clients.size);
+  console.log('Total connected clients before new connection:', clients.size);
+  console.log('Current clients:', Array.from(clients.values()));
   // Mark connection alive and setup heartbeat
   ws.isAlive = true;
   ws.on('pong', () => {
@@ -152,8 +149,11 @@ wss.on('connection', (ws, req) => {
     console.log('Registering/updating client:', { id, name });
     clients.set(ws, { id, name });
     
+    console.log('Current clients after registration:', Array.from(clients.values()));
+    
     // Wait a bit before broadcasting to ensure all clients are registered
     setTimeout(() => {
+      console.log('Broadcasting after client registration...');
       broadcastOnlineDevices();
     }, 200); // Increased delay for better stability
   }
@@ -170,6 +170,7 @@ wss.on('connection', (ws, req) => {
     
     if ((msg.type === 'init' || msg.type === 'update-name') && msg.id && msg.name) {
       console.log('Processing init/update-name:', msg);
+      console.log('Client info before registration:', { id: msg.id, name: msg.name });
       registerOrUpdateClient(msg.id, msg.name);
     } else if (msg.type === 'message') {
       const client = clients.get(ws);
@@ -236,6 +237,26 @@ wss.on('connection', (ws, req) => {
           }
         }
       }
+    } else if (msg.type === 'disconnect') {
+      // Handle explicit disconnect message
+      const client = clients.get(ws);
+      if (client) {
+        console.log('Client sent disconnect message:', client.name);
+        // Remove client immediately and broadcast
+        clients.delete(ws);
+        broadcastOnlineDevices();
+      }
+    } else if (msg.type === 'refresh-devices') {
+      // Handle refresh devices request
+      const client = clients.get(ws);
+      if (client) {
+        console.log('Client requested device refresh:', client.name);
+        console.log('Current clients before refresh:', Array.from(clients.values()));
+        // Send fresh device list to all clients
+        broadcastOnlineDevices();
+      } else {
+        console.log('Refresh request from unregistered client');
+      }
     } else {
       console.log('Unknown message type:', msg.type);
     }
@@ -244,10 +265,17 @@ wss.on('connection', (ws, req) => {
   ws.on('close', () => {
     const client = clients.get(ws);
     if (client) {
-      console.log('Client disconnected:', client.name);
+      console.log('Client disconnected:', client.name, '(WebSocket closed)');
     }
     clients.delete(ws);
     // Broadcast immediately so others see the update right away
+    broadcastOnlineDevices();
+  });
+
+  ws.on('error', (error) => {
+    const client = clients.get(ws);
+    console.log('WebSocket error for client:', client?.name || 'unknown', error.message);
+    clients.delete(ws);
     broadcastOnlineDevices();
   });
 });
